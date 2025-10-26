@@ -1,0 +1,407 @@
+# INSTALL: run once
+!pip install streamlit pyngrok gtts SpeechRecognition pydub pandas numpy scikit-learn
+
+from pyngrok import ngrok
+# paste your token between quotes if you have one, else skip (comment out the next line)
+# ngrok.set_auth_token("YOUR_NGROK_AUTHTOKEN")
+
+%%writefile app.py
+import streamlit as st
+import sqlite3
+import pandas as pd
+import json
+import os
+import time
+from gtts import gTTS
+import io
+import base64
+
+# ---------------------------
+# Helper: speak (TTS)
+# ---------------------------
+def speak(text):
+    """
+    Create a small mp3 via gTTS and expose it via st.audio.
+    In Colab this plays in browser (no mic is required).
+    """
+    try:
+        tts = gTTS(text=text, lang='en')
+        fname = "tts_temp.mp3"
+        tts.save(fname)
+        audio_bytes = open(fname, "rb").read()
+        st.audio(audio_bytes, format="audio/mp3")
+        # remove temp file
+        try:
+            os.remove(fname)
+        except:
+            pass
+    except Exception as e:
+        st.write("TTS not available:", e)
+
+# ---------------------------
+# Database initialization
+# ---------------------------
+DB_PATH = "kaamsetu.db"
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+c = conn.cursor()
+
+# Create tables
+c.execute("""CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    email TEXT UNIQUE,
+    phone TEXT,
+    password TEXT,
+    role TEXT,
+    skills TEXT
+)""")
+
+c.execute("""CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT,
+    description TEXT,
+    location TEXT,
+    wage REAL,
+    skills_required TEXT,
+    posted_by INTEGER,
+    assigned_to INTEGER DEFAULT NULL,
+    accepted_by INTEGER DEFAULT NULL
+)""")
+
+c.execute("""CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER,
+    user_id INTEGER,
+    rating INTEGER,
+    comment TEXT,
+    created_at TEXT
+)""")
+
+c.execute("""CREATE TABLE IF NOT EXISTS min_wage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    region TEXT UNIQUE,
+    wage REAL
+)""")
+
+conn.commit()
+
+# ---------------------------
+# Simple ML recommendation (skill token matching)
+# ---------------------------
+def recommend_jobs_by_skill(user_skills):
+    """
+    Very simple scorer: if any skill word appears in job's skills_required or title/description,
+    the job gets points. Return top 5 matches.
+    """
+    user_skills = [s.strip().lower() for s in user_skills if s.strip()]
+    jobs = pd.read_sql("SELECT * FROM jobs", conn)
+    if jobs.empty:
+        return []
+    def score_row(row):
+        text = " ".join([str(row['title']), str(row['description']), str(row['skills_required'])]).lower()
+        score = 0
+        for s in user_skills:
+            if s and s in text:
+                score += 1
+        return score
+    jobs['score'] = jobs.apply(score_row, axis=1)
+    jobs = jobs.sort_values(['score','wage'], ascending=[False,False])
+    return jobs[jobs['score']>0].head(10).to_dict('records')
+
+# ---------------------------
+# Small helpers
+# ---------------------------
+def get_user_by_email(email):
+    r = c.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    return r
+
+def register_user(name,email,phone,password,role,skills):
+    try:
+        c.execute("INSERT INTO users (name,email,phone,password,role,skills) VALUES (?,?,?,?,?,?)",
+                  (name,email,phone,password,role,skills))
+        conn.commit()
+        return True, "Registered"
+    except Exception as e:
+        return False, str(e)
+
+def login_user(email,password):
+    r = c.execute("SELECT * FROM users WHERE email=? AND password=?", (email,password)).fetchone()
+    return r
+
+def post_job(title, description, location, wage, skills_required, posted_by):
+    c.execute("""INSERT INTO jobs (title,description,location,wage,skills_required,posted_by)
+                 VALUES (?,?,?,?,?,?)""", (title,description,location,wage,skills_required,posted_by))
+    conn.commit()
+    return c.lastrowid
+
+def remove_job(job_id):
+    c.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+    conn.commit()
+
+def assign_job(job_id, worker_id):
+    c.execute("UPDATE jobs SET assigned_to=? WHERE id=?", (worker_id, job_id))
+    conn.commit()
+
+def accept_job(job_id, worker_id):
+    # mark accepted_by (worker contact will be derived from users table)
+    c.execute("UPDATE jobs SET accepted_by=? WHERE id=?", (worker_id, job_id))
+    conn.commit()
+
+def add_feedback(job_id, user_id, rating, comment):
+    c.execute("INSERT INTO feedback (job_id,user_id,rating,comment,created_at) VALUES (?,?,?,?,?)",
+              (job_id,user_id,rating,comment,time.strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+
+def set_min_wage(region,wage):
+    try:
+        c.execute("INSERT OR REPLACE INTO min_wage (id, region, wage) VALUES ((SELECT id FROM min_wage WHERE region=?), ?, ?)",
+                  (region, region, wage))
+        conn.commit()
+    except Exception as e:
+        st.error(e)
+
+def get_min_wage(region):
+    r = c.execute("SELECT wage FROM min_wage WHERE region=?", (region,)).fetchone()
+    return r[0] if r else None
+
+# ---------------------------
+# Streamlit UI
+# ---------------------------
+st.set_page_config(page_title="KaamSetu", layout="wide")
+st.title("KaamSetu — Labour Exchange & Mediation (Streamlit Edition)")
+
+# Sidebar for public actions
+menu = st.sidebar.selectbox("Navigation", ["Home","Register","Login","Jobs","Admin"])
+
+# Simple session emulation
+if 'user' not in st.session_state:
+    st.session_state['user'] = None
+
+# ---------------------------
+# HOME
+# ---------------------------
+if menu == "Home":
+    st.header("Welcome to KaamSetu")
+    st.write("A platform to connect local labour with employers. Use the sidebar to register or login.")
+    st.write("Features included: register/login, post jobs, search, assign, accept, feedback, min-wage and ML suggestions.")
+    st.markdown("---")
+    if st.button("Play welcome voice"):
+        speak("Welcome to KaamSetu. Use the sidebar to register or login.")
+
+# ---------------------------
+# REGISTER
+# ---------------------------
+elif menu == "Register":
+    st.header("Register as Worker / Employer / Admin")
+    with st.form("register_form", clear_on_submit=False):
+        name = st.text_input("Full name")
+        email = st.text_input("Email")
+        phone = st.text_input("Phone number")
+        password = st.text_input("Password", type="password")
+        role = st.selectbox("Role", ["worker","employer","admin"])
+        skills = st.text_area("Skills (comma separated) - for workers")
+        submitted = st.form_submit_button("Register")
+        if submitted:
+            ok,msg = register_user(name,email,phone,password,role,skills)
+            if ok:
+                st.success("Registered successfully. You can login now.")
+                speak("Registration successful")
+            else:
+                st.error("Error: " + msg)
+
+# ---------------------------
+# LOGIN
+# ---------------------------
+elif menu == "Login":
+    st.header("Login")
+    with st.form("login_form"):
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
+        if submitted:
+            user = login_user(email,password)
+            if user:
+                st.session_state['user'] = {
+                    "id": user[0],
+                    "name": user[1],
+                    "email": user[2],
+                    "phone": user[3],
+                    "role": user[5],
+                    "skills": user[6]
+                }
+                st.success(f"Welcome {user[1]} ({user[5]})")
+                speak(f"Welcome {user[1]}")
+            else:
+                st.error("Invalid credentials")
+
+# ---------------------------
+# JOBS PAGE
+# ---------------------------
+elif menu == "Jobs":
+    st.header("Jobs — search, apply, view")
+
+    # Search bar
+    q = st.text_input("Search jobs by keyword / skill / location")
+    if st.button("Search"):
+        if q.strip() == "":
+            st.warning("Enter a search term")
+        else:
+            df = pd.read_sql("SELECT * FROM jobs", conn)
+            mask = df.apply(lambda r: q.lower() in str(r['title']).lower() or q.lower() in str(r['description']).lower() or q.lower() in str(r['skills_required']).lower() or q.lower() in str(r['location']).lower(), axis=1)
+            results = df[mask]
+            if results.empty:
+                st.info("No matching jobs")
+            else:
+                for idx,row in results.iterrows():
+                    st.subheader(f"{row['title']} — ₹{row['wage']}")
+                    st.write(row['description'])
+                    st.write("Skills:", row['skills_required'])
+                    st.write("Location:", row['location'])
+                    st.write("Posted by user id:", row['posted_by'])
+                    # show feedback
+                    fb = pd.read_sql("SELECT rating,comment FROM feedback WHERE job_id=?",(conn,), params=(row['id'],))
+                    # buttons: accept / apply (for logged-in worker)
+                    if st.session_state['user'] and st.session_state['user']['role'] == 'worker':
+                        if st.button(f"Accept job {row['id']}"):
+                            accept_job(row['id'], st.session_state['user']['id'])
+                            st.success("Job accepted. Your contact will be shared with employer.")
+            st.markdown("---")
+
+    st.markdown("### All jobs")
+    jobs_df = pd.read_sql("SELECT * FROM jobs", conn)
+    if jobs_df.empty:
+        st.info("No jobs posted yet.")
+    else:
+        for i,row in jobs_df.iterrows():
+            st.card = st.expander(f"{row['title']} — ₹{row['wage']} ({row['location']})", expanded=False)
+            with st.card:
+                st.write(row['description'])
+                st.write("Skills required:", row['skills_required'])
+                st.write("Posted by:", row['posted_by'])
+                st.write("Assigned to:", row['assigned_to'])
+                st.write("Accepted by (worker id):", row['accepted_by'])
+                # Feedback list
+                feedbacks = c.execute("SELECT rating,comment FROM feedback WHERE job_id=?", (row['id'],)).fetchall()
+                if feedbacks:
+                    for fb in feedbacks:
+                        st.write(f"⭐ {fb[0]} — {fb[1]}")
+                # actions depending on user role
+                if st.session_state['user']:
+                    role = st.session_state['user']['role']
+                    if role == 'employer' and st.session_state['user']['id'] == row['posted_by']:
+                        # employer controls for job
+                        if st.button(f"Remove job {row['id']}", key=f"rem{row['id']}"):
+                            remove_job(row['id'])
+                            st.experimental_rerun()
+                    if role == 'admin':
+                        if st.button(f"Remove (admin) job {row['id']}", key=f"admrem{row['id']}"):
+                            remove_job(row['id'])
+                            st.experimental_rerun()
+                        # Assign
+                        worker_id = st.number_input(f"Assign worker (id) to job {row['id']}", min_value=0, step=1, key=f"assign{row['id']}")
+                        if st.button(f"Assign job {row['id']}", key=f"doassign{row['id']}"):
+                            assign_job(row['id'], int(worker_id))
+                            st.success("Assigned")
+                    if role == 'worker':
+                        if st.button(f"Give feedback for job {row['id']}", key=f"fb{row['id']}"):
+                            st.session_state['fb_job'] = row['id']
+                # Accept contact display: if accepted_by set, show worker details
+                if row['accepted_by']:
+                    worker = c.execute("SELECT name,phone FROM users WHERE id=?", (row['accepted_by'],)).fetchone()
+                    if worker:
+                        st.info(f"Accepted by: {worker[0]} — Contact: {worker[1]}")
+
+    # Post job (for employers)
+    st.markdown("---")
+    st.subheader("Post a job (employer)")
+    if st.session_state['user'] and st.session_state['user']['role'] == 'employer':
+        with st.form("postjob"):
+            title = st.text_input("Title")
+            desc = st.text_area("Description")
+            location = st.text_input("Location")
+            wage = st.number_input("Wage (₹)", min_value=0.0, step=10.0)
+            skills_required = st.text_input("Skills required (comma separated)")
+            posted = st.form_submit_button("Post job")
+            if posted:
+                jid = post_job(title,desc,location,wage,skills_required, st.session_state['user']['id'])
+                st.success(f"Job posted with id {jid}")
+    else:
+        st.info("Only employers can post jobs. Login as an employer or register as one.")
+
+# ---------------------------
+# ADMIN
+# ---------------------------
+elif menu == "Admin":
+    st.header("Admin Panel")
+    if not st.session_state['user'] or st.session_state['user']['role'] != 'admin':
+        st.warning("Login as admin to access admin panel")
+    else:
+        st.subheader("Users")
+        users = pd.read_sql("SELECT id,name,email,phone,role,skills FROM users", conn)
+        st.dataframe(users)
+        st.subheader("All Jobs")
+        st.dataframe(pd.read_sql("SELECT * FROM jobs", conn))
+
+        st.subheader("Min wage (set per region)")
+        region = st.text_input("Region name")
+        mw = st.number_input("Wage (₹)", min_value=0.0, step=10.0)
+        if st.button("Set min wage"):
+            set_min_wage(region, mw)
+            st.success("Min wage updated")
+
+# ---------------------------
+# Feedback modal pseudo (session-based)
+# ---------------------------
+if 'fb_job' in st.session_state and st.session_state['fb_job']:
+    jid = st.session_state['fb_job']
+    st.sidebar.subheader("Add Feedback")
+    rating = st.sidebar.slider("Rating", 1, 5, 5)
+    comment = st.sidebar.text_area("Comment")
+    if st.sidebar.button("Submit Feedback"):
+        if not st.session_state['user']:
+            st.sidebar.error("Login required to give feedback")
+        else:
+            add_feedback(jid, st.session_state['user']['id'], rating, comment)
+            st.sidebar.success("Thanks for feedback")
+            st.session_state['fb_job'] = None
+            st.experimental_rerun()
+
+# ---------------------------
+# Helper: export DB
+# ---------------------------
+st.sidebar.markdown("---")
+if st.sidebar.button("Export users CSV"):
+    df = pd.read_sql("SELECT * FROM users", conn)
+    tmp = df.to_csv(index=False)
+    b64 = base64.b64encode(tmp.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="users.csv">Download users.csv</a>'
+    st.sidebar.markdown(href, unsafe_allow_html=True)
+if st.sidebar.button("Export jobs CSV"):
+    df = pd.read_sql("SELECT * FROM jobs", conn)
+    tmp = df.to_csv(index=False)
+    b64 = base64.b64encode(tmp.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="jobs.csv">Download jobs.csv</a>'
+    st.sidebar.markdown(href, unsafe_allow_html=True)
+
+# ---------------------------
+# Recommend jobs for logged-in worker
+# ---------------------------
+if st.session_state['user'] and st.session_state['user']['role'] == 'worker':
+    st.sidebar.markdown("### Recommendations")
+    skills_text = st.sidebar.text_input("Enter some of your skills (comma sep)")
+    if st.sidebar.button("Get recommendations"):
+        skills_list = [s.strip() for s in skills_text.split(",") if s.strip()]
+        recs = recommend_jobs_by_skill(skills_list)
+        if not recs:
+            st.sidebar.info("No recommendations found. Try different skill words.")
+        else:
+            for r in recs:
+                st.sidebar.write(f"{r['title']} — ₹{r['wage']} — {r['location']}")
+
+# Run streamlit in background
+!streamlit run app.py --server.port 8501 &>/dev/null&
+
+
+from pyngrok import ngrok
+public_url = ngrok.connect(8501)
+public_url
