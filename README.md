@@ -87,8 +87,6 @@ The app enables **daily wage laborers** and **small contractors** to connect, ve
    ```bash
 git clone https://github.com/<your-username>/KaamSetu.git
 cd KaamSetu
-```
----
 3. Backend Setup
 cd backend
 pip install -r requirements.txt
@@ -107,7 +105,7 @@ Add credentials in .env:
 Place trained model in /ml_model/kaamsetu_model.pkl
 The model runs using TensorFlow Lite or scikit-learn.
 
-## S❤️ Built for AI for Goods Hackathon 2025
+## ❤️ Built for AI for Goods Hackathon 2025
 “Empowering rural livelihoods through AI, accessibility, and trust.”
         ↓  
 [Panchayat / Admin Dashboard]
