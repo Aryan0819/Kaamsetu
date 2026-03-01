@@ -88,7 +88,7 @@ The app enables **daily wage laborers** and **small contractors** to connect, ve
 git clone https://github.com/<your-username>/KaamSetu.git
 cd KaamSetu
 ```
-
+---
 3. Backend Setup
 cd backend
 pip install -r requirements.txt
