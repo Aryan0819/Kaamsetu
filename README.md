@@ -79,9 +79,10 @@ The app enables **daily wage laborers** and **small contractors** to connect, ve
 [API Gateway / FastAPI Backend]  
         ↓  
 [Database + AI Matching Engine]
+```
+---
 
-
-🧰 Setup Instructions
+## 🧰 Setup Instructions
 1. Clone the repository
 git clone https://github.com/<your-username>/KaamSetu.git
 cd KaamSetu
@@ -103,7 +104,7 @@ Add credentials in .env:
 Place trained model in /ml_model/kaamsetu_model.pkl
 The model runs using TensorFlow Lite or scikit-learn.
 
-❤️ Built for AI for Goods Hackathon 2025
+## S❤️ Built for AI for Goods Hackathon 2025
 “Empowering rural livelihoods through AI, accessibility, and trust.”
         ↓  
 [Panchayat / Admin Dashboard]
