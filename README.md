@@ -84,23 +84,26 @@ The app enables **daily wage laborers** and **small contractors** to connect, ve
 
 ## 🧰 Setup Instructions
 1. Clone the repository
+   ```bash
 git clone https://github.com/<your-username>/KaamSetu.git
 cd KaamSetu
-2. Backend Setup
+```
+
+3. Backend Setup
 cd backend
 pip install -r requirements.txt
 uvicorn main:app --reload
-3. Frontend Setup
+4. Frontend Setup
 cd frontend
 flutter pub get
 flutter run
-4. Firebase Configuration
+5. Firebase Configuration
 Add your Firebase config file to /frontend/lib/firebase_options.dart
 Enable Firestore, Authentication, and Cloud Functions.
-5. SMS Integration
+6. SMS Integration
 Create a Twilio or Gupshup account.
 Add credentials in .env:
-6. AI Model
+7. AI Model
 Place trained model in /ml_model/kaamsetu_model.pkl
 The model runs using TensorFlow Lite or scikit-learn.
 
